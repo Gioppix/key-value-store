@@ -1,0 +1,8 @@
+[package]
+name = "bench"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+key-value-store = { path = "../" }
+rand = "0.9.2"
