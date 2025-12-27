@@ -1,78 +1,103 @@
 use key_value_store::KVStorage;
+use std::collections::HashMap;
 use std::fs;
+use std::sync::Arc;
+use std::thread;
+
+const NUM_THREADS: usize = 8;
+const KNOWN_KEY_SPACE: u64 = 100;
+const KEY_SPACE_SIZE: u64 = 1000000000;
+
+fn gen_random_key(thread_id: usize) -> u64 {
+    const TOTAL_KNOWN_SPACE: u64 = NUM_THREADS as u64 * KNOWN_KEY_SPACE;
+    TOTAL_KNOWN_SPACE
+        + (thread_id as u64 * KEY_SPACE_SIZE)
+        + (rand::random::<u64>() % KEY_SPACE_SIZE)
+}
+
+fn random_value(seed: u64) -> Option<u64> {
+    if rand::random::<u64>().is_multiple_of(10) {
+        None
+    } else {
+        Some(seed)
+    }
+}
+
+fn initialize_known_values(kv: &KVStorage, expected: &mut HashMap<u64, Option<u64>>, offset: u64) {
+    for key in 0..KNOWN_KEY_SPACE {
+        let actual_key = offset + key;
+        let value = Some(actual_key * 100);
+        expected.insert(actual_key, value);
+        kv.write(actual_key, value).unwrap();
+    }
+}
+
+fn verify_and_update_known_value(
+    kv: &KVStorage,
+    expected: &mut HashMap<u64, Option<u64>>,
+    known_key: u64,
+    thread_id: usize,
+    seed: u64,
+) {
+    let stored = kv.read(&known_key).unwrap();
+    let expected_value = expected.get(&known_key).unwrap();
+    assert_eq!(
+        stored, *expected_value,
+        "Mismatch for known key {} in thread {}",
+        known_key, thread_id
+    );
+
+    let new_value = random_value(seed);
+    kv.write(known_key, new_value).unwrap();
+    expected.insert(known_key, new_value);
+}
 
 fn main() {
-    // let env = env_logger::Env::new().default_filter_or("info");
-    // let _ = env_logger::try_init_from_env(env);
-
     let location = "./test-dbs";
     let _ = fs::remove_dir_all(location);
     fs::create_dir_all(location).unwrap();
 
-    let kv = KVStorage::new(location).unwrap();
+    let kv = Arc::new(KVStorage::new(location).unwrap());
 
-    use std::collections::HashMap;
+    let handles: Vec<_> = (0..NUM_THREADS)
+        .map(|thread_id| {
+            let kv_clone = Arc::clone(&kv);
+            thread::spawn(move || {
+                let mut expected_values = HashMap::new();
+                let thread_key_offset = (thread_id as u64) * KNOWN_KEY_SPACE;
 
-    // Create a small in-memory hashmap with known key/values
-    let mut expected_values: HashMap<u64, Option<u64>> = HashMap::new();
-    const KNOWN_KEY_SPACE: u64 = 100;
+                initialize_known_values(&kv_clone, &mut expected_values, thread_key_offset);
 
-    // Initialize with some known key/values
-    for key in 0..KNOWN_KEY_SPACE {
-        let value = key * 100;
-        expected_values.insert(key, Some(value));
-        kv.write(key, Some(value)).unwrap();
-    }
+                for i in 0..100000000 {
+                    // println!("thread_id: {thread_id}, i: {i}");
 
-    // Helper function to generate random keys that don't overlap with known key space
-    fn gen_random_key() -> u64 {
-        const KEY_SPACE_SIZE: u64 = 1000000000;
-        KNOWN_KEY_SPACE + (rand::random::<u64>() % KEY_SPACE_SIZE)
-    }
+                    let key = gen_random_key(thread_id);
+                    let value = random_value(i * 2);
 
-    for i in 0..100000000 {
-        let key = gen_random_key();
+                    kv_clone.write(key, value).unwrap();
+                    assert_eq!(kv_clone.read(&key).unwrap(), value);
 
-        // 10% null rate
-        let value = if rand::random::<u64>() % 10 == 0 {
-            None
-        } else {
-            Some(i * 2)
-        };
+                    if i.is_multiple_of(10) {
+                        let _ = kv_clone.read(&gen_random_key(thread_id)).unwrap();
+                    }
 
-        kv.write(key, value).unwrap();
+                    if i.is_multiple_of(100) {
+                        let known_key =
+                            thread_key_offset + (rand::random::<u64>() % KNOWN_KEY_SPACE);
+                        verify_and_update_known_value(
+                            &kv_clone,
+                            &mut expected_values,
+                            known_key,
+                            thread_id,
+                            i * 3 + known_key,
+                        );
+                    }
+                }
+            })
+        })
+        .collect();
 
-        // Read recently written key
-        assert_eq!(kv.read(&key).unwrap(), value);
-
-        // Every 10 cycles read a random key
-        if i % 10 == 0 {
-            let random_key = gen_random_key();
-            let _ = kv.read(&random_key).unwrap();
-        }
-
-        // Every 100 writes/reads, check and update known values
-        if i % 100 == 0 {
-            let known_key = rand::random::<u64>() % KNOWN_KEY_SPACE;
-
-            // Check for correctness
-            let stored_value = kv.read(&known_key).unwrap();
-            let expected_value = expected_values.get(&known_key).unwrap();
-            assert_eq!(
-                stored_value, *expected_value,
-                "Mismatch for known key {}",
-                known_key
-            );
-
-            // Update the known value (10% null rate)
-            let new_value = if rand::random::<u64>() % 10 == 0 {
-                None
-            } else {
-                Some(i * 3 + known_key)
-            };
-
-            kv.write(known_key, new_value).unwrap();
-            expected_values.insert(known_key, new_value);
-        }
+    for handle in handles {
+        handle.join().unwrap();
     }
 }
