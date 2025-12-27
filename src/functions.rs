@@ -40,10 +40,6 @@ impl KVMemoryRepr {
     pub fn value(&self) -> &Option<Value> {
         &self.value
     }
-
-    pub fn unpack(self) -> (Key, Option<Value>) {
-        (self.key, self.value)
-    }
 }
 
 impl PartialOrd for KVMemoryRepr {
@@ -76,7 +72,7 @@ pub fn create_file(path: &Path, file_size_bytes: u64) -> Result<File, Error> {
     Ok(file)
 }
 
-pub fn write_at_offset(file: &File, data: &KVMemoryRepr, offset: u64) -> Result<(), Error> {
+pub fn write_data_at_offset(file: &File, data: &KVMemoryRepr, offset: u64) -> Result<(), Error> {
     let serialized: Vec<u8> = to_allocvec(data)?;
     file.write_at(serialized.as_slice(), offset)?;
 

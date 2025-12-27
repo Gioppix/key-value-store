@@ -1,6 +1,7 @@
 pub mod compactor;
 
 use crate::FILE_SIZE_BYTES;
+use crate::cleanup::CleanableFile;
 use crate::functions::{FindResult, KVMemoryRepr};
 use crate::{Key, errors::Error, functions};
 use std::os::unix::fs::FileExt;
@@ -22,13 +23,14 @@ pub struct SSTable {
 }
 
 impl SSTable {
-    pub fn cleanup(self) -> Result<(), Error> {
-        std::fs::remove_file(self.file_path)?;
-        Ok(())
-    }
-
     pub fn file_path(&self) -> &Path {
         &self.file_path
+    }
+}
+
+impl CleanableFile for SSTable {
+    fn path(&self) -> PathBuf {
+        self.file_path().to_owned()
     }
 }
 
@@ -80,7 +82,7 @@ fn entries_to_index_and_data(entries: &[KVMemoryRepr]) -> Result<(Index, Vec<u8>
 }
 
 fn serialize_entry(entry: &KVMemoryRepr) -> Result<Vec<u8>, Error> {
-    postcard::to_allocvec::<KVMemoryRepr>(&entry).map_err(Into::into)
+    postcard::to_allocvec::<KVMemoryRepr>(entry).map_err(Into::into)
 }
 
 fn create_sstable_file(

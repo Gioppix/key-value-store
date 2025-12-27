@@ -15,7 +15,7 @@ const MERGE_THRESHOLD: f64 = 4.0;
 pub struct CompactorManager {
     sstables_dir: PathBuf,
     sstables: Arc<Mutex<Vec<Arc<SSTable>>>>,
-    compacting: Arc<AtomicBool>,
+    currently_compacting: Arc<AtomicBool>,
 }
 
 impl CompactorManager {
@@ -23,14 +23,14 @@ impl CompactorManager {
         Self {
             sstables_dir,
             sstables,
-            compacting: Default::default(),
+            currently_compacting: Default::default(),
         }
     }
 
     pub fn signal_sstable_inserted(&self) {
         let sstables_dir = self.sstables_dir.clone();
         let sstables = self.sstables.clone();
-        let compacting = self.compacting.clone();
+        let compacting = self.currently_compacting.clone();
 
         if compacting.swap(true, std::sync::atomic::Ordering::SeqCst) {
             return; // Already compacting

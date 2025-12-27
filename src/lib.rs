@@ -1,16 +1,18 @@
 mod append_log;
 mod cleanup;
 mod errors;
+mod files;
 mod functions;
 mod sstables;
 
 use functions::KVMemoryRepr;
 use sstables::compactor::CompactorManager;
-use std::fs::{self, File};
+use std::fs::{self};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use crate::errors::Error;
+use crate::files::FileWithPath;
 use crate::functions::FindResult;
 use crate::sstables::SSTable;
 
@@ -20,11 +22,7 @@ const FILE_SIZE_BYTES: u64 = 1024 * 16;
 pub struct KVStorage {
     // Key lock
     /// File and the current write offset
-    append_log: Mutex<(
-        Arc<(File, PathBuf)>,
-        Mutex<u64>,
-        Arc<Mutex<Vec<KVMemoryRepr>>>,
-    )>,
+    append_log: Mutex<(Arc<FileWithPath>, Mutex<u64>, Arc<Mutex<Vec<KVMemoryRepr>>>)>,
     /// Sorted list (newer at the beginning) of SSTables
     sstables: Arc<Mutex<Vec<Arc<SSTable>>>>,
     base_dir: PathBuf,
@@ -65,7 +63,7 @@ impl KVStorage {
         let data = KVMemoryRepr::new(key, value);
 
         // Clone the Arc since a slot on that file was acquired
-        let (slot, file, in_memory) = loop {
+        let (slot, log_file, in_memory) = loop {
             let log_slot = {
                 let log_data = self.append_log.lock().expect("poisoned append_log_lock");
                 functions::acquire_log_slot(data.size(), &log_data.1)
@@ -90,7 +88,7 @@ impl KVStorage {
                     };
 
                     let sstable =
-                        sstables::log_file_to_sstable(&self.sstables_dir, &old_log_file.0)?;
+                        sstables::log_file_to_sstable(&self.sstables_dir, &old_log_file.file)?;
                     let sstable = Arc::new(sstable);
                     cleanup::background_file_delete(old_log_file);
 
@@ -104,7 +102,7 @@ impl KVStorage {
             }
         };
 
-        functions::write_at_offset(&file.0, &data, slot)?;
+        functions::write_data_at_offset(&log_file.file, &data, slot)?;
 
         in_memory
             .lock()

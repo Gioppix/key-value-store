@@ -1,64 +1,45 @@
-use crate::sstables::SSTable;
 use std::{
-    fs::{File, remove_file},
-    path::PathBuf,
+    fs::remove_file,
+    path::{Path, PathBuf},
     sync::Arc,
     thread::{sleep, spawn},
     time::Duration,
 };
 
-const MAX_RETRIES: u64 = 10;
-const RETRY_INTERVAL_MS: u64 = 10;
+// 10ms to 10 seconds
+const MAX_RETRIES: u32 = 10;
+const FIRST_DELAY_INTERVAL_MS: u32 = 10;
 
-trait Cleanable {
-    fn clean(self);
+pub trait CleanableFile {
     fn path(&self) -> PathBuf;
 }
 
-impl Cleanable for (File, PathBuf) {
-    fn clean(self) {
-        let path = self.1.to_owned();
-        match remove_file(self.1) {
-            Ok(_) => {}
-            Err(e) => {
-                log::error!("failed to remove file {:?}: {:?}", path, e);
-            }
+fn remove_file_logged(path: &Path) {
+    match remove_file(path) {
+        Ok(_) => {}
+        Err(e) => {
+            log::error!("failed to remove file {:?}: {:?}", path, e);
         }
-    }
-
-    fn path(&self) -> PathBuf {
-        self.1.clone()
     }
 }
 
-impl Cleanable for SSTable {
-    fn clean(self) {
-        let path = self.file_path().to_owned();
-        match self.cleanup() {
-            Ok(_) => {}
-            Err(e) => {
-                log::error!("failed to remove file {path:?}: {e:?}");
-            }
-        }
-    }
-
-    fn path(&self) -> PathBuf {
-        self.file_path().to_owned()
-    }
-}
-
-pub fn background_file_delete<T: Cleanable + Sync + Send + 'static>(mut file: Arc<T>) {
+/// Removes a file after it's not longer used. Uses exponential backoff.
+///
+/// This function relies on the fact that all other copies of the `Arc` are dropped after being used.
+pub fn background_file_delete<T: CleanableFile + Sync + Send + 'static>(mut file: Arc<T>) {
     let path = file.path();
     spawn(move || {
-        for _ in 0..MAX_RETRIES {
-            sleep(Duration::from_millis(RETRY_INTERVAL_MS));
+        for retry in 0..MAX_RETRIES {
+            let delay = FIRST_DELAY_INTERVAL_MS * 2_u32.pow(retry);
+            sleep(Duration::from_millis(delay as u64));
 
             file = match Arc::try_unwrap(file) {
-                Ok(f) => {
-                    f.clean();
+                Ok(_) => {
+                    remove_file_logged(&path);
+                    log::trace!("File {path:?} cleaned at retry {retry}");
                     return;
                 }
-                Err(e) => e,
+                Err(arc) => arc,
             };
         }
         log::error!("failed to remove log file {:?}: max retires reached", path,);

@@ -5,7 +5,7 @@ pub enum Error {
     InvalidDbLocation,
     FileDirectoryCreation,
     Serialization(postcard::Error),
-    IOError(io::Error),
+    IO(io::Error),
 }
 
 impl From<postcard::Error> for Error {
@@ -16,6 +16,6 @@ impl From<postcard::Error> for Error {
 
 impl From<io::Error> for Error {
     fn from(error: io::Error) -> Self {
-        Error::IOError(error)
+        Error::IO(error)
     }
 }
