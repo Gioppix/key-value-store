@@ -13,6 +13,7 @@ use std::{
 
 pub struct AppendLog {
     state: Mutex<(Arc<FileWithPath>, Mutex<u64>, Arc<Mutex<Vec<KVMemoryRepr>>>)>,
+    file_rotation_lock: Mutex<()>,
     db_dir: PathBuf,
 }
 
@@ -22,6 +23,7 @@ impl AppendLog {
 
         Ok(Self {
             state: Mutex::new((Arc::new(file), Mutex::new(0), Default::default())),
+            file_rotation_lock: Default::default(),
             db_dir: db_dir.to_owned(),
         })
     }
@@ -62,20 +64,25 @@ impl AppendLog {
 
         // Clone the Arc since a slot on that file was acquired
         let (slot, log_file, in_memory) = loop {
-            let log_slot = {
-                let state_lock = self.state.lock().expect("poisoned append_log_lock");
-                functions::acquire_log_slot(data.size(), &state_lock.1)
-                    .map(|s| (s, state_lock.0.clone(), state_lock.2.clone()))
-            };
+            let log_slot = self.try_acquire_slot(data.size());
 
             match log_slot {
                 Some(slot) => break slot,
                 None => {
                     // Create new append file
                     {
-                        let mut append_log = self.state.lock().expect("poisoned append_log");
+                        let rotation_lock_guard =
+                            self.file_rotation_lock.lock().expect("poisoned lock");
+
+                        // During wait for rotation lock another worker might have created a new file
+                        if let Some(slot) = self.try_acquire_slot(data.size()) {
+                            break slot;
+                        }
 
                         let file = create_append_log_file(&self.db_dir)?;
+
+                        // Up until here, reads work (writes will wait for rotation lock)
+                        let mut append_log = self.state.lock().expect("poisoned append_log");
 
                         let (old_log_file, ..) = mem::replace(
                             &mut *append_log,
@@ -85,12 +92,19 @@ impl AppendLog {
                         let sstable =
                             sstables::log_file_to_sstable(sstables_dir, &old_log_file.file)?;
                         let sstable = Arc::new(sstable);
-                        cleanup::background_file_delete(old_log_file);
 
                         sstables
                             .lock()
                             .expect("poisoned sstables lock")
                             .insert(0, sstable);
+
+                        drop(rotation_lock_guard);
+                        // It's important that append log lock is dropped after this point.
+                        // The in-memory logs are cleared and new reads must go through sstables, hence the write must happen.
+                        drop(append_log);
+
+                        // Avoid making other threads wait on this
+                        cleanup::background_file_delete(old_log_file);
                     };
 
                     compaction_manager.signal_sstable_inserted();
@@ -106,6 +120,15 @@ impl AppendLog {
             .push(data);
 
         Ok(())
+    }
+
+    fn try_acquire_slot(
+        &self,
+        size: u64,
+    ) -> Option<(u64, Arc<FileWithPath>, Arc<Mutex<Vec<KVMemoryRepr>>>)> {
+        let state_lock = self.state.lock().expect("poisoned append_log_lock");
+        functions::acquire_log_slot(size, &state_lock.1)
+            .map(|s| (s, state_lock.0.clone(), state_lock.2.clone()))
     }
 }
 

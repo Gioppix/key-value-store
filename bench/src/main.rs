@@ -53,6 +53,8 @@ fn verify_and_update_known_value(
 }
 
 fn main() {
+    env_logger::init();
+
     let location = "./test-dbs";
     let _ = fs::remove_dir_all(location);
     fs::create_dir_all(location).unwrap();
