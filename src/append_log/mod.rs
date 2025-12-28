@@ -12,8 +12,11 @@ use std::{
     sync::{Arc, Mutex, RwLock, RwLockReadGuard},
 };
 
+/// The file's offset is added to prevent this vector having the wrong order
+type InMemoryAppendLog = Vec<(u64, KVMemoryRepr)>;
+
 /// Represents the log file, the current available write location and the in-memory copy
-type InnerState = (FileWithPath, Mutex<u64>, Mutex<Vec<KVMemoryRepr>>);
+type InnerState = (FileWithPath, Mutex<u64>, RwLock<InMemoryAppendLog>);
 
 pub struct AppendLog {
     state: RwLock<InnerState>,
@@ -39,13 +42,13 @@ impl AppendLog {
         // Search from the end to get the most recent value for the key
         for entry in state_lock
             .2
-            .lock()
+            .read()
             .expect("poisoned in_memory")
             .iter()
             .rev()
         {
-            if entry.key() == key {
-                return match entry.value() {
+            if entry.1.key() == key {
+                return match entry.1.value() {
                     Some(v) => FindResult::Found(*v),
                     None => FindResult::Tombstone,
                 };
@@ -122,11 +125,11 @@ impl AppendLog {
 
         functions::write_data_at_offset(&read_lock.0.file, &serialized_data, slot)?;
 
-        read_lock
-            .2
-            .lock()
-            .expect("poisoned in_memory_log lock")
-            .push(data);
+        let mut in_memory_log_guard = read_lock.2.write().expect("poisoned in_memory_log lock");
+
+        in_memory_log_guard.push((slot, data));
+        // Insertion sort since it's almost sorted
+        functions::insertion_sort_by_key(&mut in_memory_log_guard, |k| k.0);
 
         Ok(())
     }
