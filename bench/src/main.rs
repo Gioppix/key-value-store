@@ -4,7 +4,7 @@ use std::fs;
 use std::sync::Arc;
 use std::thread;
 
-const NUM_THREADS: usize = 8;
+const NUM_THREADS: usize = 12;
 const KNOWN_KEY_SPACE: u64 = 100;
 const KEY_SPACE_SIZE: u64 = 1000000000;
 

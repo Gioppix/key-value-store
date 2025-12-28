@@ -2,17 +2,20 @@ use crate::{
     FILE_SIZE_BYTES, Key, Value, cleanup,
     errors::Error,
     files::FileWithPath,
-    functions::{self, FindResult, KVMemoryRepr},
+    functions::{self, FindResult},
+    serialization::{self, KVMemoryRepr},
     sstables::{self, SSTable, compactor::CompactorManager},
 };
 use std::{
     mem,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, RwLock, RwLockReadGuard},
 };
 
+type InnerState = (FileWithPath, Mutex<u64>, Mutex<Vec<KVMemoryRepr>>);
+
 pub struct AppendLog {
-    state: Mutex<(Arc<FileWithPath>, Mutex<u64>, Arc<Mutex<Vec<KVMemoryRepr>>>)>,
+    state: RwLock<InnerState>,
     file_rotation_lock: Mutex<()>,
     db_dir: PathBuf,
 }
@@ -22,7 +25,7 @@ impl AppendLog {
         let file = create_append_log_file(db_dir)?;
 
         Ok(Self {
-            state: Mutex::new((Arc::new(file), Mutex::new(0), Default::default())),
+            state: RwLock::new((file, Mutex::new(0), Default::default())),
             file_rotation_lock: Default::default(),
             db_dir: db_dir.to_owned(),
         })
@@ -30,7 +33,7 @@ impl AppendLog {
 
     /// This will search for `key` in the append log
     pub fn find_key(&self, key: &Key) -> FindResult {
-        let state_lock = self.state.lock().expect("poisoned state lock");
+        let state_lock = self.state.read().expect("poisoned state lock");
 
         // Search from the end to get the most recent value for the key
         for entry in state_lock
@@ -62,9 +65,12 @@ impl AppendLog {
     ) -> Result<(), Error> {
         let data = KVMemoryRepr::new(key, value);
 
+        let serialized_data = serialization::serialize(&data)?;
+        let serialized_data_len = serialized_data.len() as u64;
+
         // Clone the Arc since a slot on that file was acquired
-        let (slot, log_file, in_memory) = loop {
-            let log_slot = self.try_acquire_slot(data.size());
+        let (slot, read_lock) = loop {
+            let log_slot = self.try_acquire_slot(serialized_data_len);
 
             match log_slot {
                 Some(slot) => break slot,
@@ -75,18 +81,19 @@ impl AppendLog {
                             self.file_rotation_lock.lock().expect("poisoned lock");
 
                         // During wait for rotation lock another worker might have created a new file
-                        if let Some(slot) = self.try_acquire_slot(data.size()) {
+                        if let Some(slot) = self.try_acquire_slot(serialized_data_len) {
                             break slot;
                         }
 
                         let file = create_append_log_file(&self.db_dir)?;
 
-                        // Up until here, reads work (writes will wait for rotation lock)
-                        let mut append_log = self.state.lock().expect("poisoned append_log");
+                        // Up until here, reads work (writes will wait for rotation lock).
+                        // It's important that after this point there's no ongoing writes on the file
+                        let mut append_log = self.state.write().expect("poisoned append_log");
 
                         let (old_log_file, ..) = mem::replace(
                             &mut *append_log,
-                            (Arc::new(file), Default::default(), Default::default()),
+                            (file, Default::default(), Default::default()),
                         );
 
                         let sstable =
@@ -104,7 +111,7 @@ impl AppendLog {
                         drop(append_log);
 
                         // Avoid making other threads wait on this
-                        cleanup::background_file_delete(old_log_file);
+                        cleanup::remove_file_logged(&old_log_file.path);
                     };
 
                     compaction_manager.signal_sstable_inserted();
@@ -112,9 +119,10 @@ impl AppendLog {
             }
         };
 
-        functions::write_data_at_offset(&log_file.file, &data, slot)?;
+        functions::write_data_at_offset(&read_lock.0.file, &serialized_data, slot)?;
 
-        in_memory
+        read_lock
+            .2
             .lock()
             .expect("poisoned in_memory_log lock")
             .push(data);
@@ -122,13 +130,25 @@ impl AppendLog {
         Ok(())
     }
 
-    fn try_acquire_slot(
-        &self,
-        size: u64,
-    ) -> Option<(u64, Arc<FileWithPath>, Arc<Mutex<Vec<KVMemoryRepr>>>)> {
-        let state_lock = self.state.lock().expect("poisoned append_log_lock");
-        functions::acquire_log_slot(size, &state_lock.1)
-            .map(|s| (s, state_lock.0.clone(), state_lock.2.clone()))
+    /// Returns, if possible, the read lock to the state and the reserved slot
+    fn try_acquire_slot(&self, size: u64) -> Option<(u64, RwLockReadGuard<'_, InnerState>)> {
+        let state_lock = self.state.read().expect("poisoned append_log_lock");
+        AppendLog::calculate_log_slot(size, &state_lock.1).map(|location| (location, state_lock))
+    }
+
+    /// Checks if the current file can fit a new entry and, if so, updates the current write pointer
+    fn calculate_log_slot(requested_size: u64, offset: &Mutex<u64>) -> Option<u64> {
+        let mut offset_guard = offset.lock().expect("lock poisoned");
+        let current_write_offset = *offset_guard;
+
+        let remaining_space = FILE_SIZE_BYTES - current_write_offset;
+
+        if requested_size > remaining_space {
+            None
+        } else {
+            *offset_guard += requested_size;
+            Some(current_write_offset)
+        }
     }
 }
 

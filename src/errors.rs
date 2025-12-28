@@ -1,15 +1,18 @@
 use std::io;
 
+use crate::serialization::SerializationError;
+
 #[derive(Debug)]
 pub enum Error {
     InvalidDbLocation,
     FileDirectoryCreation,
-    Serialization(postcard::Error),
+    Serialization(SerializationError),
     IO(io::Error),
+    TooBig,
 }
 
-impl From<postcard::Error> for Error {
-    fn from(error: postcard::Error) -> Self {
+impl From<SerializationError> for Error {
+    fn from(error: SerializationError) -> Self {
         Error::Serialization(error)
     }
 }

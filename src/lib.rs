@@ -3,6 +3,7 @@ mod cleanup;
 mod errors;
 mod files;
 mod functions;
+mod serialization;
 mod sstables;
 
 use crate::append_log::AppendLog;

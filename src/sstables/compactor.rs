@@ -1,7 +1,8 @@
 use crate::{
     cleanup::background_file_delete,
     errors::Error,
-    functions::{self, KVMemoryRepr},
+    functions::{self},
+    serialization::{self, KVMemoryRepr},
     sstables::{self, SSTable, entries_to_index_and_data},
 };
 use std::{
@@ -124,8 +125,14 @@ fn merge_sstables(
     t2: &SSTable,
     save_tombstones: bool,
 ) -> Result<SSTable, Error> {
-    let contents_1 = functions::deserialize_file(&t1.file, t1.file_size)?;
-    let contents_2 = functions::deserialize_file(&t2.file, t2.file_size)?;
+    let contents_1 = {
+        let contents = functions::read_file(&t1.file, t1.file_size)?;
+        serialization::deserialize_entries_from_bytes(&contents, "sstable")?
+    };
+    let contents_2 = {
+        let contents = functions::read_file(&t2.file, t2.file_size)?;
+        serialization::deserialize_entries_from_bytes(&contents, "sstable")?
+    };
 
     let merged = merge_sstable_contents(&contents_1, &contents_2, save_tombstones);
 

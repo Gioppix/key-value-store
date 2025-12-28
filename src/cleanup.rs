@@ -14,7 +14,7 @@ pub trait CleanableFile {
     fn path(&self) -> PathBuf;
 }
 
-fn remove_file_logged(path: &Path) {
+pub fn remove_file_logged(path: &Path) {
     match remove_file(path) {
         Ok(_) => {}
         Err(e) => {

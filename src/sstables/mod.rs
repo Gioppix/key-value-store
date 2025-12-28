@@ -1,8 +1,9 @@
 pub mod compactor;
 
-use crate::FILE_SIZE_BYTES;
 use crate::cleanup::CleanableFile;
-use crate::functions::{FindResult, KVMemoryRepr};
+use crate::functions::FindResult;
+use crate::serialization::KVMemoryRepr;
+use crate::{FILE_SIZE_BYTES, serialization};
 use crate::{Key, errors::Error, functions};
 use std::os::unix::fs::FileExt;
 use std::path::PathBuf;
@@ -37,7 +38,8 @@ impl CleanableFile for SSTable {
 type Index = Vec<(Key, u64)>;
 
 fn log_content_to_index_and_data(log_file_content: &[u8]) -> Result<(Index, Vec<u8>), Error> {
-    let mut log_file_entries = functions::deserialize_entries_from_bytes(log_file_content)?;
+    let mut log_file_entries =
+        serialization::deserialize_entries_from_bytes(log_file_content, "log_file")?;
 
     // This is a STABLE sort (important)
     log_file_entries.sort();
@@ -67,7 +69,7 @@ fn entries_to_index_and_data(entries: &[KVMemoryRepr]) -> Result<(Index, Vec<u8>
     let mut total_offset = 0u64;
 
     for (i, entry) in entries.iter().enumerate() {
-        let serialized = serialize_entry(entry)?;
+        let serialized = serialization::serialize(entry)?;
         let entry_size = serialized.len() as u64;
 
         if index_interval > 0 && i % index_interval == 0 {
@@ -79,10 +81,6 @@ fn entries_to_index_and_data(entries: &[KVMemoryRepr]) -> Result<(Index, Vec<u8>
     }
 
     Ok((index, sstable_data))
-}
-
-fn serialize_entry(entry: &KVMemoryRepr) -> Result<Vec<u8>, Error> {
-    postcard::to_allocvec::<KVMemoryRepr>(entry).map_err(Into::into)
 }
 
 fn create_sstable_file(
@@ -123,7 +121,7 @@ pub fn find_in_sstable(key: &Key, sstable: &SSTable) -> Result<FindResult, Error
     let mut buffer = vec![0u8; size as usize];
     sstable.file.read_exact_at(&mut buffer, range_start)?;
 
-    let entries = functions::deserialize_entries_from_bytes(&buffer)?;
+    let entries = serialization::deserialize_entries_from_bytes(&buffer, "sstable")?;
     // TODO: test just a linear search as with small arrays it exploits cache locality or pipelining or whatever
     let maybe_entry_index = entries.binary_search_by_key(key, |t| *t.key()).ok();
 
