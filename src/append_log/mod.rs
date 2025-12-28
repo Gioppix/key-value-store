@@ -12,6 +12,7 @@ use std::{
     sync::{Arc, Mutex, RwLock, RwLockReadGuard},
 };
 
+/// Represents the log file, the current available write location and the in-memory copy
 type InnerState = (FileWithPath, Mutex<u64>, Mutex<Vec<KVMemoryRepr>>);
 
 pub struct AppendLog {
