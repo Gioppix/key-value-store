@@ -5,11 +5,15 @@ use crate::functions::FindResult;
 use crate::serialization::KVMemoryRepr;
 use crate::{FILE_SIZE_BYTES, serialization};
 use crate::{Key, errors::Error, functions};
+use bloomfilter::Bloom;
 use std::os::unix::fs::FileExt;
 use std::path::PathBuf;
 use std::{fs::File, path::Path};
 
 const TABLE_TO_INDEX_RATIO: u64 = 128;
+const FP_RATE: f64 = 0.001;
+
+type BloomType = Bloom<Key>;
 
 /// A SSTable with in-memory index
 pub struct SSTable {
@@ -21,11 +25,40 @@ pub struct SSTable {
     file_path: PathBuf,
     /// File size in bytes
     file_size: u64,
+    bloom_filter: BloomType,
 }
 
 impl SSTable {
     pub fn file_path(&self) -> &Path {
         &self.file_path
+    }
+
+    pub fn find(&self, key: &Key) -> Result<FindResult, Error> {
+        if !self.bloom_filter.check(key) {
+            return Ok(FindResult::None);
+        }
+
+        let (range_start, range_end) = index_to_range(key, &self.index);
+        let range_end = range_end.unwrap_or(self.file_size);
+
+        let size = range_end - range_start;
+        let mut buffer = vec![0u8; size as usize];
+        self.file.read_exact_at(&mut buffer, range_start)?;
+
+        let entries = serialization::deserialize_entries_from_bytes(&buffer, "sstable")?;
+        // TODO: test just a linear search as with small arrays it exploits cache locality or pipelining or whatever
+        let maybe_entry_index = entries.binary_search_by_key(key, |t| *t.key()).ok();
+
+        // it's important to distinguish between finding none and not finding anything
+        let result = match maybe_entry_index {
+            Some(i) => match *entries[i].value() {
+                Some(value) => FindResult::Found(value),
+                None => FindResult::Tombstone,
+            },
+            None => FindResult::None,
+        };
+
+        Ok(result)
     }
 }
 
@@ -37,7 +70,9 @@ impl CleanableFile for SSTable {
 
 type Index = Vec<(Key, u64)>;
 
-fn log_content_to_index_and_data(log_file_content: &[u8]) -> Result<(Index, Vec<u8>), Error> {
+fn log_content_to_index_and_data(
+    log_file_content: &[u8],
+) -> Result<(Index, Vec<u8>, BloomType), Error> {
     let mut log_file_entries =
         serialization::deserialize_entries_from_bytes(log_file_content, "log_file")?;
 
@@ -61,12 +96,16 @@ fn log_content_to_index_and_data(log_file_content: &[u8]) -> Result<(Index, Vec<
     entries_to_index_and_data(&entries)
 }
 
-fn entries_to_index_and_data(entries: &[KVMemoryRepr]) -> Result<(Index, Vec<u8>), Error> {
+fn entries_to_index_and_data(
+    entries: &[KVMemoryRepr],
+) -> Result<(Index, Vec<u8>, BloomType), Error> {
     let index_size = (FILE_SIZE_BYTES / TABLE_TO_INDEX_RATIO).max(1);
     let index_interval = entries.len() / index_size as usize;
     let mut index = Vec::new();
     let mut sstable_data = Vec::new();
     let mut total_offset = 0u64;
+
+    let mut bloom_filter = Bloom::new_for_fp_rate(entries.len(), FP_RATE).unwrap();
 
     for (i, entry) in entries.iter().enumerate() {
         let serialized = serialization::serialize(entry)?;
@@ -78,9 +117,11 @@ fn entries_to_index_and_data(entries: &[KVMemoryRepr]) -> Result<(Index, Vec<u8>
 
         sstable_data.extend_from_slice(&serialized);
         total_offset += entry_size;
+
+        bloom_filter.set(entry.key());
     }
 
-    Ok((index, sstable_data))
+    Ok((index, sstable_data, bloom_filter))
 }
 
 fn create_sstable_file(
@@ -98,7 +139,7 @@ fn create_sstable_file(
 
 pub fn log_file_to_sstable(sstables_dir: &Path, log_file: &File) -> Result<SSTable, Error> {
     let log_file_content = functions::read_file(log_file, FILE_SIZE_BYTES)?;
-    let (index, sstable_data) = log_content_to_index_and_data(&log_file_content)?;
+    let (index, sstable_data, bloom_filter) = log_content_to_index_and_data(&log_file_content)?;
 
     let id: u64 = rand::random();
     let (sstable_file, sstable_path, sstable_file_size) =
@@ -110,31 +151,8 @@ pub fn log_file_to_sstable(sstables_dir: &Path, log_file: &File) -> Result<SSTab
         file: sstable_file,
         file_path: sstable_path,
         file_size: sstable_file_size,
+        bloom_filter,
     })
-}
-
-pub fn find_in_sstable(key: &Key, sstable: &SSTable) -> Result<FindResult, Error> {
-    let (range_start, range_end) = index_to_range(key, &sstable.index);
-    let range_end = range_end.unwrap_or(sstable.file_size);
-
-    let size = range_end - range_start;
-    let mut buffer = vec![0u8; size as usize];
-    sstable.file.read_exact_at(&mut buffer, range_start)?;
-
-    let entries = serialization::deserialize_entries_from_bytes(&buffer, "sstable")?;
-    // TODO: test just a linear search as with small arrays it exploits cache locality or pipelining or whatever
-    let maybe_entry_index = entries.binary_search_by_key(key, |t| *t.key()).ok();
-
-    // it's important to distinguish between finding none and not finding anything
-    let result = match maybe_entry_index {
-        Some(i) => match *entries[i].value() {
-            Some(value) => FindResult::Found(value),
-            None => FindResult::Tombstone,
-        },
-        None => FindResult::None,
-    };
-
-    Ok(result)
 }
 
 fn index_to_range(key: &Key, index: &Index) -> (u64, Option<u64>) {

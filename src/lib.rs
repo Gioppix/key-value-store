@@ -88,7 +88,7 @@ impl KVStorage {
 
         // Start scanning SSTables in order
         for sstable in current_sstables_state {
-            let res = sstables::find_in_sstable(key, sstable)?;
+            let res = sstable.find(key)?;
 
             match res {
                 FindResult::Found(value) => return Ok(Some(value)),

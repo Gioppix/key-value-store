@@ -161,6 +161,8 @@ fn serialize_length(length: u64, bytes: &mut [u8]) -> Result<(), Error> {
         return Err(Error::TooBig);
     }
 
+    // No clue what this wants me to do
+    #[allow(clippy::needless_range_loop)]
     for i in 0..STRUCT_LEN_BYTES {
         bytes[i] = (length >> (i * 8)) as u8;
     }
@@ -170,8 +172,12 @@ fn serialize_length(length: u64, bytes: &mut [u8]) -> Result<(), Error> {
 
 fn deserialize_length(bytes: &[u8; STRUCT_LEN_BYTES]) -> u64 {
     let mut length = 0u64;
+
+    // This is cleaner than `bytes.enumerate()`
+    #[allow(clippy::needless_range_loop)]
     for i in 0..STRUCT_LEN_BYTES {
         length |= (bytes[i] as u64) << (i * 8);
     }
+
     length
 }

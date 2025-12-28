@@ -1,10 +1,9 @@
 use super::Value;
-use crate::{FILE_SIZE_BYTES, errors::Error};
+use crate::errors::Error;
 use std::{
     fs::{File, OpenOptions},
     os::unix::fs::FileExt,
     path::Path,
-    sync::Mutex,
 };
 
 pub enum FindResult {

@@ -136,7 +136,7 @@ fn merge_sstables(
 
     let merged = merge_sstable_contents(&contents_1, &contents_2, save_tombstones);
 
-    let (index, data) = entries_to_index_and_data(&merged)?;
+    let (index, data, bloom_filter) = entries_to_index_and_data(&merged)?;
 
     let id: u64 = rand::random();
     let (file, path, size) = sstables::create_sstable_file(id, sstables_dir, &data)?;
@@ -147,6 +147,7 @@ fn merge_sstables(
         file,
         file_path: path,
         file_size: size,
+        bloom_filter,
     };
 
     Ok(sstable)
