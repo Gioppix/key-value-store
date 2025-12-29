@@ -2,9 +2,9 @@ use key_value_store::KVStorage;
 use std::collections::HashMap;
 use std::fs;
 use std::sync::Arc;
-use std::thread;
+use std::thread::{self};
 
-const NUM_THREADS: usize = 12;
+const NUM_THREADS: usize = 10;
 const KNOWN_KEY_SPACE: u64 = 100;
 const KEY_SPACE_SIZE: u64 = 1000000000;
 

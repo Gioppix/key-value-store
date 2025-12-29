@@ -15,8 +15,7 @@ use std::fs::{self};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-/// 16kb page size on Mac M
-const FILE_SIZE_BYTES: u64 = 1024 * 16;
+const FILE_SIZE_BYTES: u64 = 1024 * 16 * 16;
 
 pub struct KVStorage {
     // Key lock
@@ -24,7 +23,6 @@ pub struct KVStorage {
     append_log: AppendLog,
     /// Sorted list (newer at the beginning) of SSTables
     sstables: Arc<Mutex<Vec<Arc<SSTable>>>>,
-    base_dir: PathBuf,
     sstables_dir: PathBuf,
     compaction_manager: CompactorManager,
 }
@@ -50,10 +48,8 @@ impl KVStorage {
         let append_log = AppendLog::new(&db_dir)?;
 
         Ok(Self {
-            // append_log: Mutex::new((Arc::new(file), Mutex::new(0), Default::default())),
             append_log,
             sstables: sstables.clone(),
-            base_dir: db_dir,
             sstables_dir: sstables_dir.clone(),
             compaction_manager: CompactorManager::new(sstables_dir, sstables),
         })
